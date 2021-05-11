@@ -1,0 +1,718 @@
+*&---------------------------------------------------------------------*
+*& Report ZRP_EXTRACT_OBJECT_LKJ
+*&---------------------------------------------------------------------*
+*& Author:  Liang Kanjie
+*& Date:    2021/05/11
+*&---------------------------------------------------------------------*
+*& Description: Extract object from SAP program or t-code
+*&---------------------------------------------------------------------*
+*& Changes:
+*& 2021/05/11 Liang Kanjie  Create program
+*&
+*&
+*&---------------------------------------------------------------------*
+REPORT zrp_extract_object_lkj.
+
+TYPE-POOLS: abap.
+
+TABLES: rpy_prog,tstc.
+
+TYPES:
+  BEGIN OF tp_pro_list,
+    tcode TYPE  tcode,
+    pgmna	TYPE program_id,
+  END OF tp_pro_list.
+
+
+TYPES:
+  BEGIN OF tp_obj_list,
+    objtype   TYPE trobjtype,
+    objname   TYPE char50,
+
+    exttype   TYPE char20,
+    extname   TYPE pname,
+    extstatus TYPE char15,
+  END OF tp_obj_list.
+
+TYPES:
+  BEGIN OF tp_obj_code,
+    obj_code TYPE string,
+  END OF tp_obj_code.
+
+
+DATA
+      : gt_rpy_repo        TYPE TABLE OF rpy_repo
+      , gv_str             TYPE string
+      , gt_abaptxt255      TYPE TABLE OF abaptxt255
+      , gs_DD04L TYPE dd04l
+      , gs_DD02l TYPE DD02l
+      , gs_TRDIR TYPE trdir
+      , gs_seoclassdf TYPE seoclassdf
+      , gt_pro_list TYPE TABLE OF tp_pro_list
+      , gt_obj_list_all TYPE TABLE OF tp_obj_list
+      , gt_obj_list_pro TYPE TABLE OF tp_obj_list
+      , gs_obj_list TYPE tp_obj_list
+      , gt_result_tab TYPE STANDARD TABLE OF line
+      , gt_TSTC TYPE TABLE OF tstc
+      , gs_TFDIR TYPE tfdir
+      .
+
+
+CONSTANTS
+         : c_sperate1 TYPE string VALUE '=================================================='
+         , c_sperate2 TYPE string VALUE '--------------------------------------------------'
+         .
+
+FIELD-SYMBOLS:
+  <lines>       TYPE any,
+  <fs_obj_code> TYPE tp_obj_code
+  .
+
+SELECT-OPTIONS
+: s_prog FOR rpy_prog-progname
+, s_TCODE FOR tstc-tcode
+
+.
+
+PERFORM sub_main.
+
+
+*&---------------------------------------------------------------------*
+*& Form CLAC_PROGRAM
+*&---------------------------------------------------------------------*
+*& text
+*&---------------------------------------------------------------------*
+*& -->  p1        text
+*& <--  p2        text
+*&---------------------------------------------------------------------*
+FORM sub_main .
+
+
+  IF s_TCODE IS NOT INITIAL.
+
+    SELECT tcode pgmna FROM tstc INTO CORRESPONDING FIELDS OF TABLE gt_pro_list
+      WHERE tcode IN s_TCODE.
+
+  ENDIF.
+
+  IF s_prog IS NOT INITIAL.
+
+    SELECT progname AS pgmna  FROM reposrc APPENDING CORRESPONDING FIELDS OF TABLE gt_pro_list
+      WHERE progname IN s_prog AND ( subc = '1' OR subc = 'I'  ) AND r3state = 'A'.
+
+  ENDIF.
+
+  SORT gt_pro_list .
+  DELETE ADJACENT DUPLICATES FROM gt_pro_list.
+
+
+
+  LOOP AT  gt_pro_list ASSIGNING FIELD-SYMBOL(<fs_pro_list>).
+
+    REFRESH: gt_rpy_repo, gt_abaptxt255, gt_obj_list_pro.
+    CALL FUNCTION 'RPY_PROGRAM_READ'
+      EXPORTING
+        language         = sy-langu
+        program_name     = <fs_pro_list>-pgmna
+        with_includelist = 'X'
+*       ONLY_SOURCE      = ' '
+*       ONLY_TEXTS       = ' '
+*       READ_LATEST_VERSION       = ' '
+        with_lowercase   = 'X'
+* IMPORTING
+*       PROG_INF         =
+      TABLES
+        include_tab      = gt_rpy_repo
+*       SOURCE           =
+        source_extended  = gt_abaptxt255
+*       TEXTELEMENTS     =
+      EXCEPTIONS
+        cancelled        = 1
+        not_found        = 2
+        permission_error = 3
+        OTHERS           = 4.
+    IF sy-subrc = 0.
+
+      gv_str = <fs_pro_list>-pgmna .
+
+      CLEAR  gs_obj_list.
+      SELECT SINGLE * FROM trdir INTO gs_TRDIR WHERE name = gv_str.
+      IF sy-subrc = 0.
+        gs_obj_list-extstatus = 'Existed'.
+      ELSE.
+        gs_obj_list-extstatus = 'Not Existed'.
+      ENDIF.
+      gs_obj_list-objtype = 'PROG'.
+      gs_obj_list-objname = gv_str.
+      gs_obj_list-exttype =  'Program'.
+
+
+      WRITE
+      : gs_obj_list-objtype , space
+      , gs_obj_list-objname , space
+      , gs_obj_list-exttype , space
+      , gs_obj_list-extname , space
+      , gs_obj_list-extstatus, /.
+
+
+      LOOP AT gt_abaptxt255 ASSIGNING <lines>.
+
+        CONDENSE <lines>.
+        IF <lines> IS NOT INITIAL.
+          IF <lines>+0(1) <> '*' AND <lines>+0(1) <> '"'.
+
+            PERFORM sub_EXTRACT_object USING <lines>.
+
+          ENDIF.
+        ENDIF.
+
+      ENDLOOP.
+
+      SORT   gt_obj_list_pro BY objtype objname.
+
+      DELETE ADJACENT DUPLICATES FROM gt_obj_list_pro COMPARING objtype objname.
+
+      IF gt_obj_list_pro IS NOT INITIAL.
+        CLEAR  gs_obj_list.
+        gs_obj_list-objtype = c_sperate2.
+        gs_obj_list-objname = c_sperate2.
+        gs_obj_list-exttype = c_sperate2.
+        gs_obj_list-extname = c_sperate2.
+        gs_obj_list-extstatus = c_sperate2.
+
+        WRITE
+        : gs_obj_list-objtype , space
+        , gs_obj_list-objname , space
+        , gs_obj_list-exttype , space
+        , gs_obj_list-extname , space
+        , gs_obj_list-extstatus, /.
+      ENDIF.
+
+      LOOP AT gt_obj_list_pro INTO gs_obj_list.
+
+        WRITE:  gs_obj_list-objtype , space, gs_obj_list-objname ,space, gs_obj_list-exttype, space, gs_obj_list-extname,  space, gs_obj_list-extstatus, /.
+
+      ENDLOOP.
+
+      APPEND LINES OF gt_obj_list_pro TO gt_obj_list_all.
+
+      CLEAR  gs_obj_list.
+      gs_obj_list-objtype = c_sperate1.
+      gs_obj_list-objname = c_sperate1.
+      gs_obj_list-exttype = c_sperate1.
+      gs_obj_list-extname = c_sperate1.
+      gs_obj_list-extstatus = c_sperate1.
+
+      WRITE
+      : gs_obj_list-objtype , space
+      , gs_obj_list-objname , space
+      , gs_obj_list-exttype , space
+      , gs_obj_list-extname , space
+      , gs_obj_list-extstatus, /.
+
+    ENDIF.
+
+  ENDLOOP.
+
+
+ENDFORM.
+
+
+
+FORM sub_EXTRACT_object
+  USING p_codeline TYPE data.
+
+
+  DATA
+        : lv_str TYPE string
+        , lt_result_tab TYPE TABLE OF line
+        , objpos TYPE i
+        , keypos1 TYPE i
+        , keypos2 TYPE i
+        , lv_found TYPE c
+        .
+
+
+  lv_str = p_codeline.
+
+  TRANSLATE lv_str TO UPPER CASE .
+
+  REFRESH lt_result_tab.
+
+  SPLIT lv_str AT space INTO TABLE lt_result_tab.
+
+  PERFORM sub_EXTRACT_include  TABLES lt_result_tab CHANGING lv_found .
+  IF lv_found ='X'.
+    RETURN.
+  ENDIF.
+
+  PERFORM sub_EXTRACT_table  TABLES lt_result_tab CHANGING lv_found .
+  IF lv_found ='X'.
+    RETURN.
+  ENDIF.
+
+  PERFORM sub_EXTRACT_class  TABLES lt_result_tab CHANGING lv_found .
+  IF lv_found ='X'.
+    RETURN.
+  ENDIF.
+
+  PERFORM sub_EXTRACT_type  TABLES lt_result_tab CHANGING lv_found.
+  IF lv_found ='X'.
+    RETURN.
+  ENDIF.
+
+  PERFORM sub_EXTRACT_function  TABLES lt_result_tab CHANGING lv_found .
+  IF lv_found ='X'.
+    RETURN.
+  ENDIF.
+
+
+ENDFORM.
+
+
+FORM sub_EXTRACT_class
+  TABLES p_result_tab LIKE gt_result_tab
+    CHANGING p_found TYPE c
+  .
+
+  DATA
+        : objpos TYPE i
+        , keypos1 TYPE i
+        , keypos2 TYPE i
+        , str TYPE string
+        .
+
+  CLEAR: gs_obj_list.
+
+*  识别包含 ref 和 to
+  LOOP AT p_result_tab INTO DATA(lv_line).
+
+    CASE lv_line.
+
+      WHEN 'REF'.
+
+        keypos1 = sy-tabix.
+
+      WHEN 'TO'.
+
+        keypos2 = sy-tabix.
+
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDLOOP.
+
+  IF keypos2 > keypos1 AND keypos1 > 0.
+
+    objpos = keypos2 + 1.
+
+    LOOP AT p_result_tab INTO lv_line FROM objpos.
+
+      IF lv_line IS NOT INITIAL.
+*去掉.
+        FIND '.' IN lv_line   MATCH OFFSET DATA(moff).
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        FIND ',' IN lv_line   MATCH OFFSET moff.
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        IF lv_line(1) = 'Z'.
+
+          IF sy-subrc = 0.
+            gs_obj_list-extstatus = 'Existed'.
+          ELSE.
+            gs_obj_list-extstatus = 'Not Existed'.
+          ENDIF.
+
+          gs_obj_list-objtype = 'CLAS'.
+          gs_obj_list-objname = lv_line.
+
+          gs_obj_list-exttype = 'Class'.
+
+          APPEND gs_obj_list TO gt_obj_list_pro.
+          p_found = 'X'.
+
+        ENDIF.
+        EXIT.
+      ENDIF.
+
+    ENDLOOP.
+
+
+  ENDIF.
+
+
+
+ENDFORM.
+
+FORM sub_EXTRACT_function
+  TABLES p_result_tab LIKE gt_result_tab
+    CHANGING p_found TYPE c
+  .
+
+  DATA
+        : objpos TYPE i
+        , keypos1 TYPE i
+        , keypos2 TYPE i
+        , str TYPE string
+        .
+
+  CLEAR: gs_obj_list.
+
+*  识别包含 ref 和 to
+  LOOP AT p_result_tab INTO DATA(lv_line).
+
+    CASE lv_line.
+
+      WHEN 'CALL'.
+
+        keypos1 = sy-tabix.
+
+      WHEN 'FUNCTION'.
+
+        keypos2 = sy-tabix.
+
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDLOOP.
+
+  IF keypos2 > keypos1 AND keypos1 > 0.
+
+    objpos = keypos2 + 1.
+
+    LOOP AT p_result_tab INTO lv_line FROM objpos.
+
+      IF lv_line IS NOT INITIAL.
+*去掉.
+
+        FIND '.' IN lv_line   MATCH OFFSET DATA(moff).
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+*        REPLACE '.'  INTO lv_line WITH ``.
+        REPLACE ALL OCCURRENCES OF ''''  IN lv_line WITH ``.
+
+
+        IF lv_line(1) = 'Z'.
+
+          SELECT SINGLE * FROM tfdir INTO gs_TFDIR WHERE funcname = lv_line.
+          IF sy-subrc = 0.
+            gs_obj_list-extstatus = 'Existed'.
+          ELSE.
+            gs_obj_list-extstatus = 'Not Existed'.
+          ENDIF.
+
+          gs_obj_list-objtype = 'FUGR'.
+          gs_obj_list-objname = gs_TFDIR-pname.
+
+          gs_obj_list-exttype = 'Function Module'.
+          gs_obj_list-extname = lv_line.
+          APPEND gs_obj_list TO gt_obj_list_pro.
+          p_found = 'X'.
+
+        ENDIF.
+        EXIT.
+      ENDIF.
+
+    ENDLOOP.
+
+
+  ENDIF.
+
+
+
+ENDFORM.
+
+FORM sub_EXTRACT_table
+  TABLES p_result_tab LIKE gt_result_tab
+    CHANGING p_found TYPE c
+  .
+
+  DATA
+        : objpos TYPE i
+        , keypos1 TYPE i
+        , keypos2 TYPE i
+        , str TYPE string
+        .
+
+  CLEAR: gs_obj_list.
+
+*  识别包含 ref 和 to
+  LOOP AT p_result_tab INTO DATA(lv_line).
+
+    CASE lv_line.
+
+      WHEN 'TABLE'.
+
+        keypos1 = sy-tabix.
+
+      WHEN 'OF'.
+
+        keypos2 = sy-tabix.
+
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDLOOP.
+
+  IF keypos2 > keypos1 AND keypos1 > 0.
+
+    objpos = keypos2 + 1.
+
+    LOOP AT p_result_tab INTO lv_line FROM objpos.
+
+      IF lv_line IS NOT INITIAL.
+*去掉.
+        FIND '.' IN lv_line   MATCH OFFSET DATA(moff).
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        FIND ',' IN lv_line   MATCH OFFSET moff.
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        IF lv_line(1) = 'Z'.
+
+          SELECT SINGLE * FROM DD02l INTO gs_DD02l WHERE tabname = lv_line.
+          IF sy-subrc = 0.
+            gs_obj_list-extstatus = 'Existed'.
+          ELSE.
+            gs_obj_list-extstatus = 'Not Existed'.
+          ENDIF.
+
+          gs_obj_list-objtype = 'TABL'.
+          gs_obj_list-objname = lv_line.
+
+          gs_obj_list-exttype = 'Table'.
+          APPEND gs_obj_list TO gt_obj_list_pro.
+          p_found = 'X'.
+
+        ENDIF.
+        EXIT.
+      ENDIF.
+
+    ENDLOOP.
+
+
+  ENDIF.
+
+ENDFORM.
+
+
+FORM sub_EXTRACT_include
+  TABLES p_result_tab LIKE gt_result_tab
+    CHANGING p_found TYPE c
+  .
+
+  DATA
+        : objpos TYPE i
+        , keypos1 TYPE i
+        , keypos2 TYPE i
+        , str TYPE string
+        .
+
+  CLEAR: gs_obj_list.
+
+*  识别包含 ref 和 to
+  LOOP AT p_result_tab INTO DATA(lv_line).
+
+    CASE lv_line.
+
+      WHEN 'INCLUDE'.
+
+        keypos1 = sy-tabix.
+
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDLOOP.
+
+  IF  keypos1 > 0.
+
+    objpos = keypos1 + 1.
+
+    LOOP AT p_result_tab INTO lv_line FROM objpos.
+
+      IF lv_line IS NOT INITIAL.
+*去掉.
+        FIND '.' IN lv_line   MATCH OFFSET DATA(moff).
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        IF lv_line(1) = 'Z'.
+
+          SELECT SINGLE * FROM trdir INTO gs_TRDIR WHERE name = lv_line.
+          IF sy-subrc = 0.
+            gs_obj_list-extstatus = 'Existed'.
+          ELSE.
+            gs_obj_list-extstatus = 'Not Existed'.
+          ENDIF.
+
+          gs_obj_list-objtype = 'PROG'.
+          gs_obj_list-objname = lv_line.
+
+          gs_obj_list-exttype = 'INCLUDE'.
+          APPEND gs_obj_list TO gt_obj_list_pro.
+          p_found = 'X'.
+
+        ENDIF.
+        EXIT.
+      ENDIF.
+
+    ENDLOOP.
+
+
+  ENDIF.
+
+
+
+ENDFORM.
+
+FORM sub_EXTRACT_type
+  TABLES p_result_tab LIKE gt_result_tab
+    CHANGING p_found TYPE c
+  .
+
+  DATA
+        : objpos TYPE i
+        , keypos1 TYPE i
+        , keypos2 TYPE i
+        , str TYPE string
+        .
+
+  CLEAR: gs_obj_list.
+
+*  识别包含 ref 和 to
+  LOOP AT p_result_tab INTO DATA(lv_line).
+
+    CASE lv_line.
+
+      WHEN 'TYPE'.
+
+        keypos1 = sy-tabix.
+
+      WHEN OTHERS.
+    ENDCASE.
+
+  ENDLOOP.
+
+  IF  keypos1 > 0.
+
+    objpos = keypos1 + 1.
+
+    LOOP AT p_result_tab INTO lv_line FROM objpos.
+
+      IF lv_line IS NOT INITIAL.
+*去掉.
+        FIND '.' IN lv_line   MATCH OFFSET DATA(moff).
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        FIND ',' IN lv_line   MATCH OFFSET moff.
+        IF sy-subrc = 0.
+
+          lv_line = lv_line(moff).
+
+        ENDIF.
+
+        IF lv_line(1) = 'Z'.
+
+*去掉-已经后面的对象
+
+          FIND '-' IN lv_line   MATCH OFFSET moff.
+          IF sy-subrc = 0.
+
+            lv_line = lv_line(moff).
+
+          ENDIF.
+
+          FIND '=' IN lv_line   MATCH OFFSET moff.
+          IF sy-subrc = 0.
+
+            lv_line = lv_line(moff).
+
+          ENDIF.
+
+
+*Data Element
+          SELECT SINGLE * FROM dd04l INTO gs_DD04L WHERE rollname = lv_line.
+          IF sy-subrc = 0.
+
+            gs_obj_list-exttype = 'Data Element'.
+            gs_obj_list-objtype = 'DTEL'.
+
+          ELSE.
+
+            SELECT SINGLE * FROM DD02l INTO gs_DD02l WHERE tabname = lv_line.
+            IF sy-subrc = 0.
+*Table
+              IF gs_DD02l-tabclass = 'TRANSP'.
+
+                gs_obj_list-exttype = 'Table'.
+                gs_obj_list-objtype = 'TABL'.
+
+              ELSE.
+*Structure
+                gs_obj_list-exttype = 'Structure'.
+                gs_obj_list-objtype = 'TABL'.
+              ENDIF.
+
+            ELSE.
+
+              SELECT SINGLE * FROM seoclassdf INTO gs_seoclassdf WHERE clsname = lv_line.
+              IF sy-subrc = 0.
+
+                gs_obj_list-exttype = 'Class'.
+                gs_obj_list-objtype = 'CLAS'.
+              ENDIF.
+
+            ENDIF.
+
+          ENDIF.
+
+          IF gs_obj_list-exttype IS NOT INITIAL.
+            gs_obj_list-extstatus = 'Existed'.
+          ELSE.
+            gs_obj_list-extstatus = 'Not Existed'.
+          ENDIF.
+
+          gs_obj_list-objname = lv_line.
+
+          APPEND gs_obj_list TO gt_obj_list_pro.
+          p_found = 'X'.
+
+        ENDIF.
+        EXIT.
+      ENDIF.
+
+    ENDLOOP.
+
+
+  ENDIF.
+
+
+
+ENDFORM.
